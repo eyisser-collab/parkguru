@@ -513,7 +513,19 @@ async def create_subscription_checkout(body: CreateCheckoutRequest, request: Req
 @api_router.get("/subscriptions/status/{session_id}")
 async def subscription_status(session_id: str, request: Request):
     stripe = _get_stripe(request)
-    status: CheckoutStatusResponse = await stripe.get_checkout_status(session_id)
+    try:
+        status: CheckoutStatusResponse = await stripe.get_checkout_status(session_id)
+    except Exception as e:
+        logger.warning(f"Stripe status lookup failed for {session_id}: {e}")
+        existing = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0}) or {}
+        return {
+            "session_id": session_id,
+            "payment_status": existing.get("payment_status", "unknown"),
+            "status": existing.get("status", "unknown"),
+            "amount_total": 0,
+            "currency": "usd",
+            "metadata": {},
+        }
     # Update db only if not already paid
     existing = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
     if existing and existing.get("payment_status") != "paid":

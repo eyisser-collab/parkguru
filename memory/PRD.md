@@ -1,27 +1,37 @@
-# Park Guru — PRD (MVP)
+# Park Guru — PRD (v2)
 
 ## Vision
-Park Guru is a premium, habit-forming travel-planning experience for U.S. National Parks. It combines real-time NPS data with a cinematic Apple-minimal UI so users can plan optimized multi-park road trips and build a visual collection of visited parks.
+Park Guru is a premium, habit-forming travel-planning experience for U.S. National Parks. Cinematic Apple-minimal UI + real-time NPS data + optimized routing + collection/achievement loop + subscription revenue.
 
-## Core User Flows
-1. Explore — Cinematic dark hero screen with "Plan Your Trip" CTA, featured parks carousel, and by-state browsing.
-2. Plan — Bottom-sheet modal: pick start city, trip duration (2–10 days), choose Auto (nearest-neighbor) or Manual park selection → Generate.
-3. Itinerary — Animated route visual, per-day park cards (hero + 3 top trails + description), bento-style cost estimator (miles, drive hours, gas, lodging, food totals).
-4. Collection — 63-park grid with grayscale unvisited / color visited, progress bar, filters.
-5. Profile — Stats bento + 7 achievements (First Stamp, Trailblazer, Pathfinder, Wilderness Veteran, Golden State, Mighty Five, Halfway Home) + reset.
-6. Park Detail — Full hero, gallery, top trails, activities, weather from NPS.
+## Core Flows
+1. **Explore** — Cinematic dark hero + "Plan Your Trip" CTA + featured parks carousel + **ALL** states browsable.
+2. **Plan** — Bottom-sheet modal: **free-form city autocomplete** (OpenStreetMap Nominatim), popular quick-picks, duration 2–10 days, Auto/Manual mode.
+3. **Itinerary** — Route visual + cost bento + per-park cards with top trails **+ deep-link buttons: Booking.com / Airbnb / VRBO / AllTrails / Google Calendar**.
+4. **Trips** — Saved trips + **6 suggested trip templates** with cinematic imagery (Mighty Five, Pacific NW Giants, Desert Southwest, Alaska Wild, Smoky & Shenandoah, California Dream). Taps generate real plans.
+5. **Collection** — **63**-park grid (full official count), grayscale unvisited / color visited, progress bar, filters. **Confetti cannon** on first visit, **photo upload + share** via long-press modal.
+6. **Profile** — Stats + achievements + **Upgrade card** → Subscribe modal with 3 tiers (Free / Premium $4.99 / Ultra $9.99).
+7. **Subscribe** — Full cinematic paywall with feature comparison, Stripe Checkout (test mode, no real charges), polling for payment status.
 
-## Data
-- Real-time NPS API (developer.nps.gov) for all 60 national parks (incl. "National Park & Preserve").
-- Curated top trails overlay for 20+ flagship parks; generic fallback for others.
-- Local AsyncStorage for visited parks, saved trips, achievements.
+## Data / APIs
+- **NPS API** for 63 parks (includes Sequoia + Kings Canyon split + Redwood + American Samoa).
+- **Nominatim** (OSM) for free-form city geocoding — no key needed.
+- **Stripe Checkout** via `emergentintegrations` (test key), `payment_transactions` collection in MongoDB.
+- **AsyncStorage** for visited parks, saved trips, achievements, visitedPhotos, current tier.
 
-## Tech
-- Frontend: Expo Router, React Native (iOS/Android/Web), Reanimated, expo-image, expo-linear-gradient, expo-haptics.
-- Backend: FastAPI + httpx, in-memory 30-min cache of NPS data, nearest-neighbor route planner with Haversine, simple cost model.
+## Backend Endpoints
+- `GET /api/parks` (63), `GET /api/parks/{code}`
+- `GET /api/start-cities`, `GET /api/geocode?q=`
+- `POST /api/plan-trip` (accepts start_city_id OR start_lat/lng/start_name)
+- `GET /api/subscriptions/packages`, `POST /api/subscriptions/checkout`
+- `GET /api/subscriptions/status/{session_id}` (graceful unknown), `POST /api/webhook/stripe`
 
-## API
-- GET /api/parks · GET /api/parks/{code} · GET /api/start-cities · POST /api/plan-trip
+## Integrations Policy
+- **Real, working**: NPS API, OpenStreetMap geocoding, Stripe Checkout (test).
+- **Deep-links only** (no true API): Airbnb, VRBO, Booking.com, AllTrails, Google Calendar. Clearly labeled "coming soon" for Capital One/Gmail/Calendar ingest.
 
 ## Out of Scope
-Authentication, real-time flights/hotels, social features, payments.
+- Real-time flights, in-app hotel booking, social graph, auth.
+
+## Monetization
+- Subscription tiers (Premium/Ultra) wired to Stripe test mode.
+- Ready to add Booking.com affiliate program (user plans to enroll).
