@@ -83,18 +83,54 @@ export const api = {
   listParks: () => get<Park[]>('/parks'),
   getPark: (code: string) => get<ParkDetail>(`/parks/${code}`),
   startCities: () => get<StartCity[]>('/start-cities'),
+  geocode: (q: string) => get<StartCity[]>(`/geocode?q=${encodeURIComponent(q)}`),
   planTrip: (body: {
-    start_city_id: string;
+    start_city_id?: string;
+    start_lat?: number;
+    start_lng?: number;
+    start_name?: string;
     duration_days: number;
     mode: 'auto' | 'manual';
     selected_park_codes?: string[];
   }) => post<TripPlan>('/plan-trip', body),
+  listPackages: () => get<{ id: string; tier: string; amount: number; currency: string; name: string }[]>('/subscriptions/packages'),
+  createCheckout: (body: { package_id: string; origin_url: string }) =>
+    post<{ url: string; session_id: string }>('/subscriptions/checkout', body),
+  subscriptionStatus: (sessionId: string) =>
+    get<{ session_id: string; payment_status: string; status: string; amount_total: number; currency: string; metadata: any }>(`/subscriptions/status/${sessionId}`),
 };
 
 // ---------- Local persistence ----------
 const VISITED_KEY = 'pg.visited';
 const SAVED_TRIPS_KEY = 'pg.trips';
 const ACHIEVEMENTS_KEY = 'pg.achievements';
+const VISITED_PHOTOS_KEY = 'pg.visitedPhotos';
+const TIER_KEY = 'pg.tier';
+
+export type Tier = 'free' | 'premium' | 'ultra';
+
+export async function getTier(): Promise<Tier> {
+  const raw = await AsyncStorage.getItem(TIER_KEY);
+  return (raw as Tier) || 'free';
+}
+export async function setTier(t: Tier) {
+  await AsyncStorage.setItem(TIER_KEY, t);
+}
+
+export async function getVisitedPhotos(): Promise<Record<string, string>> {
+  const raw = await AsyncStorage.getItem(VISITED_PHOTOS_KEY);
+  return raw ? JSON.parse(raw) : {};
+}
+export async function setVisitedPhoto(parkCode: string, base64: string) {
+  const cur = await getVisitedPhotos();
+  cur[parkCode] = base64;
+  await AsyncStorage.setItem(VISITED_PHOTOS_KEY, JSON.stringify(cur));
+}
+export async function removeVisitedPhoto(parkCode: string) {
+  const cur = await getVisitedPhotos();
+  delete cur[parkCode];
+  await AsyncStorage.setItem(VISITED_PHOTOS_KEY, JSON.stringify(cur));
+}
 
 export async function getVisited(): Promise<string[]> {
   const raw = await AsyncStorage.getItem(VISITED_KEY);

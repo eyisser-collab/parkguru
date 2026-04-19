@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, Platform,
-  ActivityIndicator,
+  ActivityIndicator, Linking,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -187,6 +187,46 @@ export default function Itinerary() {
                         <Ionicons name="arrow-forward" size={14} color={COLORS.textPrimary} />
                       </TouchableOpacity>
                     </View>
+
+                    {/* Deep links to external services */}
+                    <Text style={styles.integrationsTitle}>Book & Explore</Text>
+                    <View style={styles.integrationsGrid}>
+                      <IntegrationBtn
+                        label="Booking.com"
+                        icon="bed-outline"
+                        color="#003B95"
+                        onPress={() => openExternal(`https://www.booking.com/searchresults.html?ss=${encodeURIComponent(stop.park.name)}&aid=parkguru`)}
+                        testID={`book-hotels-${stop.park.parkCode}`}
+                      />
+                      <IntegrationBtn
+                        label="Airbnb"
+                        icon="home-outline"
+                        color="#FF385C"
+                        onPress={() => openExternal(`https://www.airbnb.com/s/${encodeURIComponent(stop.park.name)}`)}
+                        testID={`book-airbnb-${stop.park.parkCode}`}
+                      />
+                      <IntegrationBtn
+                        label="VRBO"
+                        icon="key-outline"
+                        color="#245ABC"
+                        onPress={() => openExternal(`https://www.vrbo.com/search?q=${encodeURIComponent(stop.park.name)}`)}
+                        testID={`book-vrbo-${stop.park.parkCode}`}
+                      />
+                      <IntegrationBtn
+                        label="AllTrails"
+                        icon="trail-sign-outline"
+                        color="#2C5F2D"
+                        onPress={() => openExternal(`https://www.alltrails.com/search?q=${encodeURIComponent(stop.park.name)}`)}
+                        testID={`open-alltrails-${stop.park.parkCode}`}
+                      />
+                      <IntegrationBtn
+                        label="Add to Calendar"
+                        icon="calendar-outline"
+                        color="#4285F4"
+                        onPress={() => openExternal(buildCalendarUrl(stop.park.name, trip.start_city.name, trip.duration_days, stop.day))}
+                        testID={`add-calendar-${stop.park.parkCode}`}
+                      />
+                    </View>
                   </View>
                 </View>
               </Animated.View>
@@ -204,6 +244,38 @@ function CostCell({ label, value }: { label: string; value: string }) {
       <Text style={styles.costValue}>{value}</Text>
       <Text style={styles.costLabel}>{label}</Text>
     </View>
+  );
+}
+
+function openExternal(url: string) {
+  Linking.openURL(url).catch(() => {});
+}
+
+function buildCalendarUrl(parkName: string, startCity: string, durationDays: number, day: number): string {
+  const base = new Date();
+  base.setHours(9, 0, 0, 0);
+  base.setDate(base.getDate() + 14 + (day - 1)); // 2 weeks out + day offset
+  const end = new Date(base.getTime() + 8 * 60 * 60 * 1000);
+  const fmt = (d: Date) => d.toISOString().replace(/[-:]|\.\d{3}/g, '');
+  const params = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: `Park Guru · ${parkName}`,
+    dates: `${fmt(base)}/${fmt(end)}`,
+    details: `Park Guru itinerary · Day ${day} of ${durationDays} · From ${startCity}`,
+    location: parkName,
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+function IntegrationBtn({ label, icon, color, onPress, testID }: { label: string; icon: any; color: string; onPress: () => void; testID: string }) {
+  return (
+    <TouchableOpacity style={styles.intBtn} onPress={onPress} testID={testID} activeOpacity={0.85}>
+      <View style={[styles.intIcon, { backgroundColor: color + '18' }]}>
+        <Ionicons name={icon} size={16} color={color} />
+      </View>
+      <Text style={styles.intLabel} numberOfLines={1}>{label}</Text>
+      <Ionicons name="open-outline" size={12} color={COLORS.textTertiary} />
+    </TouchableOpacity>
   );
 }
 
@@ -333,4 +405,14 @@ const styles = StyleSheet.create({
     paddingVertical: 12, paddingHorizontal: 18, borderRadius: RADIUS.pill, backgroundColor: COLORS.bg,
   },
   actionTextGhost: { fontSize: 13, fontWeight: '700', color: COLORS.textPrimary, letterSpacing: -0.2 },
+
+  integrationsTitle: { fontSize: 11, fontWeight: '700', color: COLORS.textSecondary, letterSpacing: 1.2, textTransform: 'uppercase', marginTop: SPACING.md, marginBottom: SPACING.sm },
+  integrationsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  intBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 12, paddingVertical: 10, borderRadius: RADIUS.pill,
+    backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border,
+  },
+  intIcon: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  intLabel: { fontSize: 12, fontWeight: '700', color: COLORS.textPrimary, letterSpacing: -0.2 },
 });

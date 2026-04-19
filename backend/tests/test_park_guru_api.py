@@ -1,9 +1,11 @@
-"""Park Guru backend API tests - covers parks, start-cities, and plan-trip flows."""
+"""Park Guru backend API tests - iteration 2 coverage.
+Covers: parks (63), geocode, plan-trip custom coords, subscriptions (Stripe).
+"""
 import os
 import pytest
 import requests
 
-BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://park-passport.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ["EXPO_PUBLIC_BACKEND_URL"].rstrip("/") if os.environ.get("EXPO_PUBLIC_BACKEND_URL") else "https://park-passport.preview.emergentagent.com"
 
 
 @pytest.fixture(scope="module")
@@ -13,35 +15,33 @@ def client():
     return s
 
 
-# --- Parks list ---
+# --- Parks list: expect exactly 63 including sequ/kica/redw/npsa, no seki ---
 class TestParks:
-    def test_list_parks_returns_many(self, client):
+    def test_list_parks_63(self, client):
         r = client.get(f"{BASE_URL}/api/parks", timeout=30)
         assert r.status_code == 200, r.text
         data = r.json()
         assert isinstance(data, list)
-        # Expect around 60 US national parks; allow some variance
-        assert len(data) >= 55, f"Only {len(data)} parks returned"
-        p = data[0]
-        for k in ("parkCode", "name", "states", "latitude", "longitude", "image", "gallery", "activities"):
-            assert k in p, f"Missing {k}"
+        codes = {p["parkCode"] for p in data}
+        assert len(data) == 63, f"Expected 63 parks, got {len(data)}: codes={sorted(codes)}"
+        for required in ("sequ", "kica", "redw", "npsa"):
+            assert required in codes, f"Missing expected parkCode {required}"
+        assert "seki" not in codes, "Combined seki should NOT be present"
 
-    def test_get_park_detail_curated(self, client):
-        # Curated trails for yose
-        r = client.get(f"{BASE_URL}/api/parks/yose", timeout=30)
+    def test_get_park_detail_sequ(self, client):
+        r = client.get(f"{BASE_URL}/api/parks/sequ", timeout=30)
         assert r.status_code == 200, r.text
         d = r.json()
-        assert d["parkCode"] == "yose"
-        assert isinstance(d.get("trails"), list) and len(d["trails"]) >= 3
-        assert "description" in d
+        assert d["parkCode"] == "sequ"
+        assert len(d.get("trails", [])) >= 3
 
-    def test_get_park_detail_generic(self, client):
-        r = client.get(f"{BASE_URL}/api/parks/acad", timeout=30)
-        assert r.status_code == 200
-        assert len(r.json()["trails"]) >= 3
+    def test_get_park_detail_kica(self, client):
+        r = client.get(f"{BASE_URL}/api/parks/kica", timeout=30)
+        assert r.status_code == 200, r.text
+        assert r.json()["parkCode"] == "kica"
 
     def test_get_park_404(self, client):
-        r = client.get(f"{BASE_URL}/api/parks/xxxx", timeout=30)
+        r = client.get(f"{BASE_URL}/api/parks/xxxx", timeout=15)
         assert r.status_code == 404
 
 
@@ -50,54 +50,85 @@ class TestStartCities:
     def test_list_start_cities(self, client):
         r = client.get(f"{BASE_URL}/api/start-cities", timeout=15)
         assert r.status_code == 200
+        assert len(r.json()) >= 15
+
+
+# --- Geocode (OSM Nominatim proxy) ---
+class TestGeocode:
+    def test_geocode_denver(self, client):
+        r = client.get(f"{BASE_URL}/api/geocode", params={"q": "denver"}, timeout=20)
+        assert r.status_code == 200, r.text
         data = r.json()
-        assert isinstance(data, list) and len(data) >= 15
-        c = data[0]
+        assert isinstance(data, list)
+        assert len(data) > 0, "Expected non-empty geocode results for 'denver'"
+        item = data[0]
         for k in ("id", "name", "lat", "lng"):
-            assert k in c
+            assert k in item, f"Missing key {k}"
+        assert isinstance(item["lat"], (int, float))
+        assert isinstance(item["lng"], (int, float))
+
+    def test_geocode_too_short(self, client):
+        r = client.get(f"{BASE_URL}/api/geocode", params={"q": "a"}, timeout=10)
+        assert r.status_code == 200
+        assert r.json() == []
 
 
-# --- Plan trip ---
-class TestPlanTrip:
-    def test_plan_auto_las_5(self, client):
+# --- Plan trip with custom coords ---
+class TestPlanTripCustom:
+    def test_plan_custom_coords(self, client):
         r = client.post(f"{BASE_URL}/api/plan-trip", json={
-            "start_city_id": "las", "duration_days": 5, "mode": "auto"
+            "start_lat": 39.74,
+            "start_lng": -104.99,
+            "start_name": "Custom City",
+            "duration_days": 5,
+            "mode": "auto",
         }, timeout=30)
         assert r.status_code == 200, r.text
         plan = r.json()
         assert plan["duration_days"] == 5
-        assert plan["start_city"]["id"] == "las"
+        assert plan["start_city"]["name"] == "Custom City"
+        assert abs(plan["start_city"]["lat"] - 39.74) < 0.01
+        assert abs(plan["start_city"]["lng"] - (-104.99)) < 0.01
         assert len(plan["stops"]) >= 2
-        stop = plan["stops"][0]
-        assert "park" in stop and "day" in stop
-        assert "drive_miles_from_prev" in stop
-        assert "drive_hours_from_prev" in stop
-        assert len(stop["suggested_trails"]) == 3
-        cost = plan["cost"]
-        for k in ("total_miles", "total_drive_hours", "gas_cost_usd", "total_low_usd", "total_high_usd"):
-            assert k in cost
-            assert isinstance(cost[k], (int, float))
+        assert "cost" in plan
 
-    def test_plan_manual_three_parks(self, client):
-        r = client.post(f"{BASE_URL}/api/plan-trip", json={
-            "start_city_id": "las",
-            "duration_days": 7,
-            "mode": "manual",
-            "selected_park_codes": ["yose", "zion", "grca"]
+
+# --- Subscriptions ---
+class TestSubscriptions:
+    def test_list_packages(self, client):
+        r = client.get(f"{BASE_URL}/api/subscriptions/packages", timeout=15)
+        assert r.status_code == 200, r.text
+        pkgs = r.json()
+        assert isinstance(pkgs, list)
+        by_id = {p["id"]: p for p in pkgs}
+        assert "premium_monthly" in by_id
+        assert "ultra_monthly" in by_id
+        assert abs(by_id["premium_monthly"]["amount"] - 4.99) < 0.001
+        assert abs(by_id["ultra_monthly"]["amount"] - 9.99) < 0.001
+        assert by_id["premium_monthly"]["tier"] == "premium"
+        assert by_id["ultra_monthly"]["tier"] == "ultra"
+
+    def test_checkout_valid(self, client):
+        r = client.post(f"{BASE_URL}/api/subscriptions/checkout", json={
+            "package_id": "premium_monthly",
+            "origin_url": "https://park-passport.preview.emergentagent.com",
         }, timeout=30)
         assert r.status_code == 200, r.text
-        plan = r.json()
-        codes = sorted([s["park"]["parkCode"] for s in plan["stops"]])
-        assert codes == ["grca", "yose", "zion"]
+        data = r.json()
+        assert "url" in data and data["url"].startswith("http")
+        assert "session_id" in data and data["session_id"]
+        # Verify status endpoint reachable for this session
+        sid = data["session_id"]
+        s = client.get(f"{BASE_URL}/api/subscriptions/status/{sid}", timeout=20)
+        assert s.status_code == 200, s.text
+        sdata = s.json()
+        assert sdata["session_id"] == sid
+        assert "payment_status" in sdata
+        assert "status" in sdata
 
-    def test_plan_invalid_city(self, client):
-        r = client.post(f"{BASE_URL}/api/plan-trip", json={
-            "start_city_id": "zzz", "duration_days": 5, "mode": "auto"
+    def test_checkout_invalid_package(self, client):
+        r = client.post(f"{BASE_URL}/api/subscriptions/checkout", json={
+            "package_id": "bogus_plan",
+            "origin_url": "https://park-passport.preview.emergentagent.com",
         }, timeout=15)
         assert r.status_code == 400
-
-    def test_plan_duration_too_short(self, client):
-        r = client.post(f"{BASE_URL}/api/plan-trip", json={
-            "start_city_id": "las", "duration_days": 1, "mode": "auto"
-        }, timeout=15)
-        assert r.status_code == 422

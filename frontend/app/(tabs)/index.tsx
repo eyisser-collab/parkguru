@@ -111,8 +111,7 @@ export default function Explore() {
             <SectionHeader title="By State" sub="Explore the country, region by region" />
             <View style={{ paddingHorizontal: SPACING.screenEdge, gap: SPACING.md }}>
               {Object.entries(byState)
-                .sort((a, b) => b[1].length - a[1].length)
-                .slice(0, 6)
+                .sort((a, b) => (b[1].length - a[1].length) || a[0].localeCompare(b[0]))
                 .map(([state, ps]) => (
                   <TouchableOpacity
                     key={state}
@@ -124,7 +123,9 @@ export default function Explore() {
                     <Image source={{ uri: ps[0].image }} style={styles.stateImg} contentFit="cover" />
                     <View style={{ flex: 1 }}>
                       <Text style={styles.stateName}>{state}</Text>
-                      <Text style={styles.stateMeta}>{ps.length} park{ps.length > 1 ? 's' : ''}</Text>
+                      <Text style={styles.stateMeta}>
+                        {ps.length} park{ps.length > 1 ? 's' : ''} · {ps.slice(0, 3).map(x => x.name.replace(' National Park', '').replace(' National Park & Preserve', '')).join(', ')}{ps.length > 3 ? '…' : ''}
+                      </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={20} color={COLORS.textTertiary} />
                   </TouchableOpacity>

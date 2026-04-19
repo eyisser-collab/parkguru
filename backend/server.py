@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -7,11 +7,19 @@ import logging
 import math
 import time
 import asyncio
+import uuid
 import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
-from datetime import datetime
+from typing import List, Optional, Literal, Dict, Any
+from datetime import datetime, timezone
+
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout,
+    CheckoutSessionResponse,
+    CheckoutStatusResponse,
+    CheckoutSessionRequest,
+)
 
 from parks_data import (
     START_CITIES,
@@ -31,6 +39,14 @@ load_dotenv(ROOT_DIR / ".env")
 
 NPS_API_KEY = os.environ.get("NPS_API_KEY", "")
 NPS_BASE = "https://developer.nps.gov/api/v1"
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
+NOMINATIM_BASE = "https://nominatim.openstreetmap.org"
+
+# Fixed subscription packages (server-side only for security)
+SUBSCRIPTION_PACKAGES: Dict[str, Dict[str, Any]] = {
+    "premium_monthly": {"tier": "premium", "amount": 4.99, "currency": "usd", "name": "Park Guru Premium"},
+    "ultra_monthly": {"tier": "ultra", "amount": 9.99, "currency": "usd", "name": "Park Guru Ultra"},
+}
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -78,7 +94,10 @@ class StartCity(BaseModel):
     lng: float
 
 class PlanRequest(BaseModel):
-    start_city_id: str
+    start_city_id: Optional[str] = None
+    start_lat: Optional[float] = None
+    start_lng: Optional[float] = None
+    start_name: Optional[str] = None
     duration_days: int = Field(ge=2, le=10)
     mode: Literal["auto", "manual"] = "auto"
     selected_park_codes: Optional[List[str]] = None
@@ -154,10 +173,59 @@ async def fetch_all_parks() -> List[dict]:
 
     raw = payload.get("data", [])
     parks: List[dict] = []
+    # Split Sequoia & Kings Canyon into 2 separate parks so count matches official 63
+    SEKI_SPLIT = {
+        "seki": [
+            {
+                "parkCode": "sequ",
+                "name": "Sequoia",
+                "fullName": "Sequoia National Park",
+                "states": ["CA"],
+                "description": "Home to the largest tree on Earth, General Sherman, Sequoia National Park safeguards groves of giant sequoias and rugged Sierra peaks.",
+                "image": "https://images.unsplash.com/photo-1600431521340-491eca880813?crop=entropy&cs=srgb&fm=jpg&w=1200&q=85",
+                "lat": 36.4864, "lng": -118.5658,
+            },
+            {
+                "parkCode": "kica",
+                "name": "Kings Canyon",
+                "fullName": "Kings Canyon National Park",
+                "states": ["CA"],
+                "description": "Deep glacier-carved canyons, towering sequoias, and the roaring Kings River make Kings Canyon one of the wildest corners of the Sierra.",
+                "image": "https://images.unsplash.com/photo-1501785888041-af3ef285b470?crop=entropy&cs=srgb&fm=jpg&w=1200&q=85",
+                "lat": 36.8879, "lng": -118.5551,
+            },
+        ],
+    }
     for p in raw:
         desg = p.get("designation", "")
-        if desg not in ("National Park", "National Park & Preserve", "National Parks"):
+        # Include specific parkCodes for parks with non-standard designations to reach official 63
+        if p.get("parkCode") not in ("redw", "npsa") and desg not in (
+            "National Park", "National Park & Preserve", "National Parks"
+        ):
             continue
+
+        # Split Sequoia & Kings Canyon combined entry
+        if p.get("parkCode") in SEKI_SPLIT:
+            images = [img.get("url") for img in p.get("images", []) if img.get("url")]
+            for split in SEKI_SPLIT[p["parkCode"]]:
+                parks.append({
+                    "parkCode": split["parkCode"],
+                    "name": split["name"],
+                    "fullName": split["fullName"],
+                    "states": split["states"],
+                    "designation": "National Park",
+                    "description": split["description"],
+                    "latitude": split["lat"],
+                    "longitude": split["lng"],
+                    "image": split["image"],
+                    "gallery": [split["image"]] + images[:5],
+                    "activities": [a.get("name", "") for a in p.get("activities", [])],
+                    "url": p.get("url", ""),
+                    "weatherInfo": p.get("weatherInfo", ""),
+                    "directionsInfo": p.get("directionsInfo", ""),
+                })
+            continue
+
         lat, lng = _parse_latlong(p.get("latLong", ""))
         if lat == 0 and lng == 0:
             try:
@@ -243,20 +311,28 @@ def nearest_neighbor_route(start_lat, start_lng, parks, max_stops):
 
 @api_router.post("/plan-trip", response_model=TripPlan)
 async def plan_trip(req: PlanRequest):
-    city = next((c for c in START_CITIES if c["id"] == req.start_city_id), None)
-    if not city:
-        raise HTTPException(status_code=400, detail="Invalid start city")
+    # Resolve starting location: prefer explicit lat/lng, fall back to start_city_id
+    if req.start_lat is not None and req.start_lng is not None:
+        city = {
+            "id": req.start_city_id or "custom",
+            "name": req.start_name or f"{req.start_lat:.3f}, {req.start_lng:.3f}",
+            "lat": req.start_lat,
+            "lng": req.start_lng,
+        }
+    else:
+        city = next((c for c in START_CITIES if c["id"] == req.start_city_id), None)
+        if not city:
+            raise HTTPException(status_code=400, detail="Invalid start city")
 
     parks = await fetch_all_parks()
     parks = [p for p in parks if p["latitude"] != 0 and p["longitude"] != 0]
 
     # For Alaska/Hawaii starts, focus on same-region parks only
-    if city["id"] == "anc":
+    if city["id"] == "anc" or (city["lat"] > 58 and city["lng"] < -130):
         parks = [p for p in parks if "AK" in p["states"]]
-    elif city["id"] == "hnl":
+    elif city["id"] == "hnl" or (city["lat"] < 23 and city["lng"] < -154):
         parks = [p for p in parks if "HI" in p["states"] or "AS" in p["states"]]
     else:
-        # Exclude remote states for continental starts unless user manually selects
         parks = [
             p for p in parks
             if not any(s in ("AK", "HI", "AS", "VI") for s in p["states"])
@@ -337,6 +413,149 @@ async def plan_trip(req: PlanRequest):
         cost=cost,
     )
     return plan
+
+
+# ---------- Geocode (free-form city autocomplete) ----------
+@api_router.get("/geocode")
+async def geocode(q: str, limit: int = 6):
+    """Proxy OpenStreetMap Nominatim for free-form location autocomplete."""
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as http:
+            r = await http.get(
+                f"{NOMINATIM_BASE}/search",
+                params={
+                    "q": q,
+                    "format": "json",
+                    "limit": limit,
+                    "addressdetails": 1,
+                    "countrycodes": "us",
+                },
+                headers={"User-Agent": "ParkGuru/1.0 (app@parkguru.example)"},
+            )
+            r.raise_for_status()
+            raw = r.json()
+    except Exception as e:
+        logger.warning(f"Geocode failed: {e}")
+        return []
+    results = []
+    for item in raw:
+        addr = item.get("address", {}) or {}
+        city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("hamlet") or addr.get("county") or ""
+        state = addr.get("state") or ""
+        name = city if city else item.get("display_name", "").split(",")[0]
+        label = ", ".join([p for p in [name, state] if p]) or item.get("display_name", "")
+        results.append({
+            "id": f"geo_{item.get('place_id')}",
+            "name": label,
+            "display_name": item.get("display_name", ""),
+            "lat": float(item.get("lat", 0)),
+            "lng": float(item.get("lon", 0)),
+        })
+    return results
+
+
+# ---------- Stripe subscriptions ----------
+class CreateCheckoutRequest(BaseModel):
+    package_id: str
+    origin_url: str
+
+
+def _get_stripe(request: Request) -> StripeCheckout:
+    host = str(request.base_url).rstrip("/")
+    webhook_url = f"{host}/api/webhook/stripe"
+    return StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+
+
+@api_router.get("/subscriptions/packages")
+async def list_packages():
+    return [
+        {"id": pid, **meta} for pid, meta in SUBSCRIPTION_PACKAGES.items()
+    ]
+
+
+@api_router.post("/subscriptions/checkout")
+async def create_subscription_checkout(body: CreateCheckoutRequest, request: Request):
+    if body.package_id not in SUBSCRIPTION_PACKAGES:
+        raise HTTPException(status_code=400, detail="Invalid package")
+    pkg = SUBSCRIPTION_PACKAGES[body.package_id]
+    origin = body.origin_url.rstrip("/")
+    success_url = f"{origin}/subscribe?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/subscribe"
+
+    stripe = _get_stripe(request)
+    session: CheckoutSessionResponse = await stripe.create_checkout_session(
+        CheckoutSessionRequest(
+            amount=float(pkg["amount"]),
+            currency=pkg["currency"],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={"package_id": body.package_id, "tier": pkg["tier"], "source": "park_guru"},
+        )
+    )
+    # Record pending transaction
+    await db.payment_transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session.session_id,
+        "package_id": body.package_id,
+        "tier": pkg["tier"],
+        "amount": float(pkg["amount"]),
+        "currency": pkg["currency"],
+        "payment_status": "pending",
+        "status": "initiated",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"url": session.url, "session_id": session.session_id}
+
+
+@api_router.get("/subscriptions/status/{session_id}")
+async def subscription_status(session_id: str, request: Request):
+    stripe = _get_stripe(request)
+    status: CheckoutStatusResponse = await stripe.get_checkout_status(session_id)
+    # Update db only if not already paid
+    existing = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if existing and existing.get("payment_status") != "paid":
+        await db.payment_transactions.update_one(
+            {"session_id": session_id},
+            {"$set": {
+                "payment_status": status.payment_status,
+                "status": status.status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+    return {
+        "session_id": session_id,
+        "payment_status": status.payment_status,
+        "status": status.status,
+        "amount_total": status.amount_total,
+        "currency": status.currency,
+        "metadata": status.metadata,
+    }
+
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    stripe = _get_stripe(request)
+    sig = request.headers.get("Stripe-Signature", "")
+    try:
+        resp = await stripe.handle_webhook(body, sig)
+    except Exception as e:
+        logger.warning(f"Stripe webhook error: {e}")
+        return {"received": False}
+    if resp.session_id:
+        await db.payment_transactions.update_one(
+            {"session_id": resp.session_id},
+            {"$set": {
+                "payment_status": resp.payment_status,
+                "status": resp.event_type,
+                "webhook_event_id": resp.event_id,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+    return {"received": True}
 
 
 # ---------- App wiring ----------

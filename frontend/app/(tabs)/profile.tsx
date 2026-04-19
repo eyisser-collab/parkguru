@@ -4,23 +4,27 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import {
-  api, getVisited, Park, ACHIEVEMENT_DEFS,
+  api, getVisited, Park, ACHIEVEMENT_DEFS, getTier, Tier,
 } from '../../src/lib/api';
 import { COLORS, SPACING, RADIUS, SHADOWS } from '../../src/lib/theme';
 
 export default function Profile() {
+  const router = useRouter();
   const [parks, setParks] = useState<Park[]>([]);
   const [visited, setVisited] = useState<string[]>([]);
+  const [tier, setTierState] = useState<Tier>('free');
 
   useFocusEffect(useCallback(() => {
     (async () => {
-      const [p, v] = await Promise.all([api.listParks(), getVisited()]);
+      const [p, v, t] = await Promise.all([api.listParks(), getVisited(), getTier()]);
       setParks(p);
       setVisited(v);
+      setTierState(t);
     })();
   }, []));
 
@@ -49,6 +53,36 @@ export default function Profile() {
         <SafeAreaView edges={['top']} style={{ paddingHorizontal: SPACING.screenEdge }}>
           <Text style={styles.h1}>Profile</Text>
           <Text style={styles.sub}>Your park journey, at a glance.</Text>
+
+          {/* Subscription card */}
+          <TouchableOpacity
+            onPress={() => router.push('/subscribe')}
+            activeOpacity={0.9}
+            style={styles.subCard}
+            testID="upgrade-card"
+          >
+            <LinearGradient
+              colors={tier === 'ultra' ? ['#FF5C35', '#E04824'] : tier === 'premium' ? ['#235E3B', '#1A472C'] : ['#1C241F', '#080B09']}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.subCardInner}>
+              <View>
+                <Text style={styles.subCardTier}>
+                  {tier === 'free' ? 'FREE PLAN' : tier === 'premium' ? 'PREMIUM' : 'ULTRA'}
+                </Text>
+                <Text style={styles.subCardTitle}>
+                  {tier === 'free' ? 'Unlock the full wild' : tier === 'premium' ? 'You\'re Premium' : 'You\'re Ultra'}
+                </Text>
+                <Text style={styles.subCardSub}>
+                  {tier === 'free' ? 'Unlimited trips · AI routes · Ranger tips' : 'Thanks for supporting Park Guru'}
+                </Text>
+              </View>
+              <View style={styles.subCardArrow}>
+                <Ionicons name={tier === 'free' ? 'arrow-forward' : 'settings-outline'} size={18} color="#fff" />
+              </View>
+            </View>
+          </TouchableOpacity>
 
           <View style={styles.bento}>
             <BentoCard big value={String(visited.length)} label="Parks Visited" icon="ribbon" />
@@ -133,4 +167,20 @@ const styles = StyleSheet.create({
     gap: 6, paddingVertical: 14,
   },
   resetText: { color: COLORS.textSecondary, fontSize: 13, fontWeight: '600' },
+
+  subCard: {
+    marginTop: SPACING.lg, marginBottom: SPACING.lg, borderRadius: RADIUS.lg,
+    overflow: 'hidden', ...SHADOWS.md,
+  },
+  subCardInner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    padding: SPACING.lg,
+  },
+  subCardTier: { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: '700', letterSpacing: 2 },
+  subCardTitle: { color: '#fff', fontSize: 22, fontWeight: '800', letterSpacing: -0.5, marginTop: 4 },
+  subCardSub: { color: 'rgba(255,255,255,0.8)', fontSize: 12, marginTop: 4 },
+  subCardArrow: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center', justifyContent: 'center',
+  },
 });

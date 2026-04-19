@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch, ActivityIndicator,
   TextInput, Pressable, Platform, KeyboardAvoidingView,
@@ -8,32 +8,54 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Animated, { FadeInUp } from 'react-native-reanimated';
-import { api, Park, StartCity, TripPlan, saveTrip } from '../src/lib/api';
+import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
+import { api, Park, StartCity, saveTrip } from '../src/lib/api';
 import { COLORS, SPACING, RADIUS, SHADOWS } from '../src/lib/theme';
 
 export default function PlanModal() {
   const router = useRouter();
-  const [cities, setCities] = useState<StartCity[]>([]);
+  const [popular, setPopular] = useState<StartCity[]>([]);
   const [parks, setParks] = useState<Park[]>([]);
-  const [cityId, setCityId] = useState<string>('las');
+  const [selectedCity, setSelectedCity] = useState<StartCity | null>(null);
   const [duration, setDuration] = useState(5);
   const [mode, setMode] = useState<'auto' | 'manual'>('auto');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [citySearch, setCitySearch] = useState('');
+  const [suggestions, setSuggestions] = useState<StartCity[]>([]);
+  const [searching, setSearching] = useState(false);
   const [planning, setPlanning] = useState(false);
+  const debounceRef = useRef<any>(null);
 
   useEffect(() => {
     Promise.all([api.startCities(), api.listParks()]).then(([c, p]) => {
-      setCities(c);
+      setPopular(c);
       setParks(p);
+      setSelectedCity(c[2] || c[0]); // Default: Las Vegas
     });
   }, []);
 
-  const filteredCities = useMemo(
-    () => cities.filter((c) => c.name.toLowerCase().includes(citySearch.toLowerCase())),
-    [cities, citySearch]
-  );
+  // Debounced geocode
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const q = citySearch.trim();
+    if (q.length < 2) {
+      setSuggestions([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const results = await api.geocode(q);
+        setSuggestions(results);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 320);
+    return () => debounceRef.current && clearTimeout(debounceRef.current);
+  }, [citySearch]);
 
   const sortedParks = useMemo(() => parks.slice().sort((a, b) => a.name.localeCompare(b.name)), [parks]);
 
@@ -46,21 +68,36 @@ export default function PlanModal() {
     });
   };
 
+  const pickSuggestion = (s: StartCity) => {
+    setSelectedCity(s);
+    setCitySearch('');
+    setSuggestions([]);
+    if (Platform.OS !== 'web') Haptics.selectionAsync();
+  };
+
   const generate = async () => {
+    if (!selectedCity) return;
     if (mode === 'manual' && selected.size < 2) return;
     setPlanning(true);
     try {
-      const plan = await api.planTrip({
-        start_city_id: cityId,
+      const body: any = {
         duration_days: duration,
         mode,
-        selected_park_codes: mode === 'manual' ? Array.from(selected) : undefined,
-      });
+        start_name: selectedCity.name,
+      };
+      if (selectedCity.id.startsWith('geo_') || selectedCity.id === 'custom') {
+        body.start_lat = selectedCity.lat;
+        body.start_lng = selectedCity.lng;
+      } else {
+        body.start_city_id = selectedCity.id;
+      }
+      if (mode === 'manual') body.selected_park_codes = Array.from(selected);
+      const plan = await api.planTrip(body);
       await AsyncStorage.setItem('pg.currentTrip', JSON.stringify(plan));
       await saveTrip(plan);
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace({ pathname: '/itinerary', params: { tripId: plan.id } });
-    } catch (e: any) {
+    } catch (e) {
       console.error(e);
     } finally {
       setPlanning(false);
@@ -78,34 +115,66 @@ export default function PlanModal() {
           <View style={{ width: 36 }} />
         </SafeAreaView>
 
-        <ScrollView contentContainerStyle={{ padding: SPACING.screenEdge, paddingBottom: 160 }} showsVerticalScrollIndicator={false}>
+        <ScrollView contentContainerStyle={{ padding: SPACING.screenEdge, paddingBottom: 180 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <Animated.View entering={FadeInUp.duration(400)}>
             <Text style={styles.label}>Starting from</Text>
+            {selectedCity && !citySearch && (
+              <View style={styles.selectedChip}>
+                <Ionicons name="location" size={14} color={COLORS.primary} />
+                <Text style={styles.selectedChipText} numberOfLines={1}>{selectedCity.name}</Text>
+                <TouchableOpacity onPress={() => setSelectedCity(null)} style={{ padding: 4 }}>
+                  <Ionicons name="close-circle" size={16} color={COLORS.textTertiary} />
+                </TouchableOpacity>
+              </View>
+            )}
             <View style={styles.searchBox}>
               <Ionicons name="search" size={16} color={COLORS.textSecondary} />
               <TextInput
-                placeholder="Search cities"
+                placeholder="Search any city, airport, or address"
                 placeholderTextColor={COLORS.textTertiary}
                 value={citySearch}
                 onChangeText={setCitySearch}
                 style={styles.searchInput}
                 testID="city-search-input"
               />
+              {searching && <ActivityIndicator size="small" color={COLORS.textTertiary} />}
             </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: SPACING.sm }}>
-              <View style={{ flexDirection: 'row', gap: 8, paddingRight: 20 }}>
-                {filteredCities.map((c) => (
+
+            {suggestions.length > 0 && (
+              <Animated.View entering={FadeIn.duration(200)} style={styles.suggestList}>
+                {suggestions.map((s) => (
                   <TouchableOpacity
-                    key={c.id}
-                    onPress={() => setCityId(c.id)}
-                    style={[styles.cityChip, cityId === c.id && styles.cityChipActive]}
-                    testID={`city-chip-${c.id}`}
+                    key={s.id}
+                    onPress={() => pickSuggestion(s)}
+                    style={styles.suggestRow}
+                    testID={`suggest-${s.id}`}
                   >
-                    <Text style={[styles.cityChipText, cityId === c.id && { color: '#fff' }]}>{c.name}</Text>
+                    <Ionicons name="location-outline" size={16} color={COLORS.textSecondary} />
+                    <Text style={styles.suggestText} numberOfLines={1}>{s.name}</Text>
                   </TouchableOpacity>
                 ))}
-              </View>
-            </ScrollView>
+              </Animated.View>
+            )}
+
+            {!citySearch && (
+              <>
+                <Text style={[styles.helper, { marginTop: SPACING.md }]}>Popular starts</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+                  <View style={{ flexDirection: 'row', gap: 8, paddingRight: 20 }}>
+                    {popular.map((c) => (
+                      <TouchableOpacity
+                        key={c.id}
+                        onPress={() => pickSuggestion(c)}
+                        style={[styles.cityChip, selectedCity?.id === c.id && styles.cityChipActive]}
+                        testID={`city-chip-${c.id}`}
+                      >
+                        <Text style={[styles.cityChipText, selectedCity?.id === c.id && { color: '#fff' }]}>{c.name}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </ScrollView>
+              </>
+            )}
           </Animated.View>
 
           <Animated.View entering={FadeInUp.delay(80).duration(400)} style={{ marginTop: SPACING.xl }}>
@@ -174,9 +243,9 @@ export default function PlanModal() {
 
         <SafeAreaView edges={['bottom']} style={styles.footer}>
           <TouchableOpacity
-            style={[styles.generateBtn, planning && { opacity: 0.6 }]}
+            style={[styles.generateBtn, (planning || !selectedCity) && { opacity: 0.5 }]}
             onPress={generate}
-            disabled={planning || (mode === 'manual' && selected.size < 2)}
+            disabled={planning || !selectedCity || (mode === 'manual' && selected.size < 2)}
             activeOpacity={0.85}
             testID="generate-trip-btn"
           >
@@ -209,12 +278,30 @@ const styles = StyleSheet.create({
   valueLabel: { fontSize: 13, fontWeight: '700', color: COLORS.primary },
   helper: { fontSize: 12, color: COLORS.textSecondary, marginTop: 4 },
 
+  selectedChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: COLORS.primary + '14', paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: RADIUS.pill, alignSelf: 'flex-start', marginTop: SPACING.sm,
+  },
+  selectedChipText: { color: COLORS.primary, fontSize: 13, fontWeight: '700', maxWidth: 260 },
+
   searchBox: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border,
     paddingHorizontal: 14, paddingVertical: 12, borderRadius: RADIUS.md, marginTop: SPACING.sm,
   },
   searchInput: { flex: 1, fontSize: 15, color: COLORS.textPrimary, padding: 0 },
+
+  suggestList: {
+    backgroundColor: COLORS.surface, marginTop: 8, borderRadius: RADIUS.md,
+    borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden',
+  },
+  suggestRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 14, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: COLORS.border,
+  },
+  suggestText: { flex: 1, fontSize: 14, color: COLORS.textPrimary },
 
   cityChip: {
     paddingHorizontal: 16, paddingVertical: 10, borderRadius: RADIUS.pill,
