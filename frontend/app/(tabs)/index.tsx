@@ -46,7 +46,7 @@ export default function Explore() {
 
   const goPlan = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push('/plan');
+    router.push('/(tabs)/plan');
   };
 
   return (
@@ -116,7 +116,7 @@ export default function Explore() {
                   <TouchableOpacity
                     key={state}
                     style={styles.stateRow}
-                    onPress={() => router.push(`/park/${ps[0].parkCode}`)}
+                    onPress={() => router.push(`/state/${state}`)}
                     activeOpacity={0.8}
                     testID={`state-row-${state}`}
                   >
@@ -184,7 +184,7 @@ const styles = StyleSheet.create({
   heroBg: { flex: 1 },
   heroSafe: { flex: 1, paddingHorizontal: SPACING.screenEdge, paddingBottom: SPACING.xl },
   heroOverline: {
-    color: '#fff', fontSize: 12, fontWeight: '700', letterSpacing: 2.5, opacity: 0.85,
+    color: '#fff', fontSize: 22, fontWeight: '900', letterSpacing: 6, opacity: 0.95,
   },
   heroTitle: {
     color: '#fff', fontSize: 52, fontWeight: '800', letterSpacing: -1.5, lineHeight: 54,

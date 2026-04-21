@@ -43,6 +43,7 @@ export type RouteStop = {
 export type CostEstimate = {
   total_miles: number;
   total_drive_hours: number;
+  gallons: number;
   gas_cost_usd: number;
   lodging_low_usd: number;
   lodging_high_usd: number;
@@ -52,12 +53,20 @@ export type CostEstimate = {
   total_high_usd: number;
   mpg_used: number;
   gas_price_used: number;
+  nights: number;
+  days: number;
+  lodging_per_night_low: number;
+  lodging_per_night_high: number;
+  food_per_day_low: number;
+  food_per_day_high: number;
 };
 
 export type TripPlan = {
   id: string;
   created_at: string;
   start_city: StartCity;
+  end_city?: StartCity;
+  start_date?: string;
   duration_days: number;
   stops: RouteStop[];
   cost: CostEstimate;
@@ -89,6 +98,11 @@ export const api = {
     start_lat?: number;
     start_lng?: number;
     start_name?: string;
+    end_city_id?: string;
+    end_lat?: number;
+    end_lng?: number;
+    end_name?: string;
+    start_date?: string;
     duration_days: number;
     mode: 'auto' | 'manual';
     selected_park_codes?: string[];

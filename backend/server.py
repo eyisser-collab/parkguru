@@ -98,7 +98,12 @@ class PlanRequest(BaseModel):
     start_lat: Optional[float] = None
     start_lng: Optional[float] = None
     start_name: Optional[str] = None
-    duration_days: int = Field(ge=2, le=10)
+    end_city_id: Optional[str] = None
+    end_lat: Optional[float] = None
+    end_lng: Optional[float] = None
+    end_name: Optional[str] = None
+    duration_days: int = Field(ge=1, le=30)
+    start_date: Optional[str] = None  # ISO date YYYY-MM-DD
     mode: Literal["auto", "manual"] = "auto"
     selected_park_codes: Optional[List[str]] = None
     max_drive_hours_per_day: float = 6.0
@@ -113,6 +118,7 @@ class RouteStop(BaseModel):
 class CostEstimate(BaseModel):
     total_miles: float
     total_drive_hours: float
+    gallons: float
     gas_cost_usd: float
     lodging_low_usd: float
     lodging_high_usd: float
@@ -122,11 +128,19 @@ class CostEstimate(BaseModel):
     total_high_usd: float
     mpg_used: float
     gas_price_used: float
+    nights: int
+    days: int
+    lodging_per_night_low: float
+    lodging_per_night_high: float
+    food_per_day_low: float
+    food_per_day_high: float
 
 class TripPlan(BaseModel):
     id: str
     created_at: datetime
     start_city: StartCity
+    end_city: Optional[StartCity] = None
+    start_date: Optional[str] = None
     duration_days: int
     stops: List[RouteStop]
     cost: CostEstimate
@@ -182,8 +196,8 @@ async def fetch_all_parks() -> List[dict]:
                 "fullName": "Sequoia National Park",
                 "states": ["CA"],
                 "description": "Home to the largest tree on Earth, General Sherman, Sequoia National Park safeguards groves of giant sequoias and rugged Sierra peaks.",
-                "image": "https://images.unsplash.com/photo-1600431521340-491eca880813?crop=entropy&cs=srgb&fm=jpg&w=1200&q=85",
                 "lat": 36.4864, "lng": -118.5658,
+                "image_index": 0,  # use first image from NPS seki images
             },
             {
                 "parkCode": "kica",
@@ -191,8 +205,8 @@ async def fetch_all_parks() -> List[dict]:
                 "fullName": "Kings Canyon National Park",
                 "states": ["CA"],
                 "description": "Deep glacier-carved canyons, towering sequoias, and the roaring Kings River make Kings Canyon one of the wildest corners of the Sierra.",
-                "image": "https://images.unsplash.com/photo-1501785888041-af3ef285b470?crop=entropy&cs=srgb&fm=jpg&w=1200&q=85",
                 "lat": 36.8879, "lng": -118.5551,
+                "image_index": 1,  # use a later image from NPS seki gallery
             },
         ],
     }
@@ -204,10 +218,12 @@ async def fetch_all_parks() -> List[dict]:
         ):
             continue
 
-        # Split Sequoia & Kings Canyon combined entry
+        # Split Sequoia & Kings Canyon combined entry — use actual NPS images
         if p.get("parkCode") in SEKI_SPLIT:
             images = [img.get("url") for img in p.get("images", []) if img.get("url")]
             for split in SEKI_SPLIT[p["parkCode"]]:
+                idx = split["image_index"]
+                hero = images[idx] if idx < len(images) else (images[0] if images else "")
                 parks.append({
                     "parkCode": split["parkCode"],
                     "name": split["name"],
@@ -217,8 +233,8 @@ async def fetch_all_parks() -> List[dict]:
                     "description": split["description"],
                     "latitude": split["lat"],
                     "longitude": split["lng"],
-                    "image": split["image"],
-                    "gallery": [split["image"]] + images[:5],
+                    "image": hero,
+                    "gallery": images,
                     "activities": [a.get("name", "") for a in p.get("activities", [])],
                     "url": p.get("url", ""),
                     "weatherInfo": p.get("weatherInfo", ""),
@@ -361,17 +377,34 @@ async def plan_trip(req: PlanRequest):
         total_miles += miles
         prev_lat, prev_lng = p["latitude"], p["longitude"]
 
-    # Return leg
-    return_miles = haversine_miles(prev_lat, prev_lng, city["lat"], city["lng"]) * 1.25
+    # Return leg — to end city if specified, else back to start
+    end_city = None
+    if req.end_lat is not None and req.end_lng is not None:
+        end_city = {
+            "id": req.end_city_id or "custom_end",
+            "name": req.end_name or f"{req.end_lat:.3f}, {req.end_lng:.3f}",
+            "lat": req.end_lat, "lng": req.end_lng,
+        }
+    elif req.end_city_id:
+        ec = next((c for c in START_CITIES if c["id"] == req.end_city_id), None)
+        if ec:
+            end_city = ec
+    if end_city is None:
+        end_city = city  # round-trip
+
+    return_miles = haversine_miles(prev_lat, prev_lng, end_city["lat"], end_city["lng"]) * 1.25
     total_miles += return_miles
     total_drive_hours = total_miles / AVG_DRIVING_MPH
 
-    # Day assignment: distribute stops evenly across duration
+    # Day assignment: 1-day trip = all day 1
     n = len(legs)
     stops: List[RouteStop] = []
     for idx, (p, miles, hours) in enumerate(legs):
-        day = 1 + int(round(idx * (req.duration_days - 1) / max(1, n))) if n > 1 else 1
-        day = min(day, req.duration_days)
+        if req.duration_days == 1 or n == 1:
+            day = 1
+        else:
+            day = 1 + int(round(idx * (req.duration_days - 1) / max(1, n)))
+            day = min(day, req.duration_days)
         stops.append(
             RouteStop(
                 park=Park(**p),
@@ -382,16 +415,18 @@ async def plan_trip(req: PlanRequest):
             )
         )
 
-    # Cost
+    # Detailed cost
     gallons = total_miles / DEFAULT_MPG
     gas_cost = gallons * DEFAULT_GAS_PRICE
-    lodging_low = (req.duration_days - 1) * LODGING_PER_NIGHT_LOW
-    lodging_high = (req.duration_days - 1) * LODGING_PER_NIGHT_HIGH
+    nights = max(0, req.duration_days - 1)
+    lodging_low = nights * LODGING_PER_NIGHT_LOW
+    lodging_high = nights * LODGING_PER_NIGHT_HIGH
     food_low = req.duration_days * FOOD_PER_DAY_LOW
     food_high = req.duration_days * FOOD_PER_DAY_HIGH
     cost = CostEstimate(
         total_miles=round(total_miles, 1),
         total_drive_hours=round(total_drive_hours, 1),
+        gallons=round(gallons, 2),
         gas_cost_usd=round(gas_cost, 2),
         lodging_low_usd=round(lodging_low, 2),
         lodging_high_usd=round(lodging_high, 2),
@@ -401,6 +436,12 @@ async def plan_trip(req: PlanRequest):
         total_high_usd=round(gas_cost + lodging_high + food_high, 2),
         mpg_used=DEFAULT_MPG,
         gas_price_used=DEFAULT_GAS_PRICE,
+        nights=nights,
+        days=req.duration_days,
+        lodging_per_night_low=LODGING_PER_NIGHT_LOW,
+        lodging_per_night_high=LODGING_PER_NIGHT_HIGH,
+        food_per_day_low=FOOD_PER_DAY_LOW,
+        food_per_day_high=FOOD_PER_DAY_HIGH,
     )
 
     import uuid
@@ -408,6 +449,8 @@ async def plan_trip(req: PlanRequest):
         id=str(uuid.uuid4()),
         created_at=datetime.utcnow(),
         start_city=StartCity(**city),
+        end_city=StartCity(**end_city),
+        start_date=req.start_date,
         duration_days=req.duration_days,
         stops=stops,
         cost=cost,
